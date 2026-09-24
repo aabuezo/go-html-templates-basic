@@ -1,31 +1,129 @@
 # Arquitectura de la aplicación
 
-Este proyecto es una aplicación web escrita en Go. La aplicación está organizada en paquetes con responsabilidades separadas y utiliza inyección de dependencias para conectar sus componentes.
+Este proyecto es una aplicación web server-rendered escrita en Go. Go genera el HTML con `html/template`, Chi enruta las requests, los middlewares aplican comportamiento común y los paquetes de `pkg` reciben sus dependencias desde el punto de entrada.
 
-## Idea principal
+La aplicación está en una etapa inicial: actualmente tiene las páginas Home y About, sesiones, protección CSRF y templates con Bootstrap cargado desde CDN. La guía de frontend, incluyendo HTMX, Tailwind, Alpine.js, TypeScript y ECharts, está documentada en [HTMX.md](HTMX.md) como camino de evolución; esas herramientas todavía no forman parte de las dependencias instaladas en este repositorio.
 
-`main` funciona como el punto de composición de la aplicación:
+## Índice
 
-1. Crea la configuración general.
-2. Crea el cache de templates.
-3. Crea el renderer.
-4. Crea los handlers e inyecta sus dependencias.
-5. Registra las rutas y sus middlewares.
-6. Inicia el servidor HTTP.
+- [Inicio rápido](#inicio-rápido)
+- [Decisiones arquitectónicas](#decisiones-arquitectónicas)
+- [Estructura del proyecto](#estructura-del-proyecto)
+- [Composición de la aplicación](#composición-de-la-aplicación)
+- [Flujo de una request](#flujo-de-una-request)
+- [Responsabilidad de cada paquete](#responsabilidad-de-cada-paquete)
+- [Templates y renderizado](#templates-y-renderizado)
+- [Configuración y cache](#configuración-y-cache)
+- [Sesiones](#sesiones)
+- [CSRF y formularios](#csrf-y-formularios)
+- [Agregar una nueva ruta](#agregar-una-nueva-ruta)
+- [Dependencias](#dependencias)
+- [Estado actual y próximos pasos](#estado-actual-y-próximos-pasos)
 
-El resto de los paquetes no crea dependencias globales por su cuenta. Recibe lo que necesita desde `main`.
+## Inicio rápido
 
-```text
-main
- └── AppConfig
-      ├── SessionManager
-      └── Renderer
-           └── Handler
+Requisitos: Go compatible con la versión declarada en `go.mod`.
+
+```bash
+go run ./cmd/web
 ```
 
-En código, el armado principal se ve así:
+La aplicación escucha en `http://localhost:8080`.
+
+Para verificar que todos los paquetes compilan y que los tests pasan:
+
+```bash
+go test ./...
+go vet ./...
+```
+
+Actualmente las rutas principales son:
+
+- `GET /`: página Home; guarda la dirección remota en la sesión.
+- `GET /about`: página About; muestra la dirección guardada en la sesión, si existe.
+
+## Decisiones arquitectónicas
+
+### Go genera HTML en el servidor
+
+El servidor es la fuente de verdad para el contenido y las reglas de negocio. Los handlers preparan datos y `html/template` genera la respuesta HTML.
+
+Esto mantiene el frontend simple y permite que una página funcione sin un framework SPA. Si más adelante una interacción necesita actualizar solo una parte de la página, HTMX puede solicitar un fragmento HTML sin cambiar esta arquitectura. Ver [HTMX.md](HTMX.md).
+
+### `main` es el composition root
+
+`cmd/web/main.go` crea y conecta las dependencias. Los paquetes no crean configuraciones globales ni buscan dependencias por su cuenta.
+
+Ventajas:
+
+- las dependencias son visibles;
+- el ciclo de vida de cada componente está centralizado;
+- los paquetes son más fáciles de probar;
+- cambiar una implementación no obliga a modificar todos los consumidores.
+
+### Inyección de dependencias, no variables globales
+
+Los handlers reciben el renderer y la configuración a través de sus constructores:
 
 ```go
+renderer := render.NewRenderer(app)
+handler := handlers.NewHandler(app, renderer)
+```
+
+Una variable global ocultaría las dependencias y dificultaría los tests y el manejo de concurrencia.
+
+### Separación entre HTTP, renderizado y sesiones
+
+- `cmd/web` compone la aplicación, registra rutas y define middlewares.
+- `pkg/handlers` traduce requests en respuestas y prepara datos.
+- `pkg/render` carga y ejecuta templates.
+- `pkg/session` configura el gestor de sesiones.
+- `pkg/config` reúne dependencias compartidas.
+
+Esta separación no intenta aplicar patrones por nombre. Por ejemplo, `pkg/session` no es un repository y `AppConfig` no es un `Repository`: un repository real debería abstraer persistencia, como una consulta a usuarios.
+
+## Estructura del proyecto
+
+```text
+.
+├── go.mod
+├── go.sum
+├── cmd/
+│   └── web/
+│       ├── main.go          # composición y arranque del servidor
+│       ├── middleware.go    # CSRF y carga de sesión
+│       └── routes.go        # router y orden de middlewares
+├── pkg/
+│   ├── config/
+│   │   └── config.go        # AppConfig
+│   ├── handlers/
+│   │   └── handlers.go      # handlers Home y About
+│   ├── models/
+│   │   └── templateData.go  # datos comunes para templates
+│   ├── render/
+│   │   └── render.go        # cache y ejecución de templates
+│   └── session/
+│       └── sessions.go      # configuración de SCS
+├── templates/
+│   ├── about.page.tmpl
+│   ├── base.layout.tmpl
+│   └── home.page.tmpl
+├── README.md
+└── HTMX.md                 # guía de frontend y evolución propuesta
+```
+
+No hay todavía una carpeta `frontend/` ni una salida `static/` en el repositorio. Si se incorpora Vite, esa estructura y su flujo de build se explican en [HTMX.md](HTMX.md).
+
+## Composición de la aplicación
+
+El arranque actual sigue este orden:
+
+```go
+tc, err := render.CreateTemplateCache()
+if err != nil {
+    log.Fatal("cannot create template cache")
+}
+
 app := &config.AppConfig{
     UseCache:      false,
     TemplateCache: tc,
@@ -36,25 +134,58 @@ app.Session = session.New(app.InProduction)
 
 renderer := render.NewRenderer(app)
 handler := handlers.NewHandler(app, renderer)
+
+srv := &http.Server{
+    Addr:    ":8080",
+    Handler: routes(handler, app),
+}
+
+log.Fatal(srv.ListenAndServe())
 ```
 
-## Estructura de paquetes
+Los constructores pueden llamarse `NewRenderer` y `NewHandler` porque expresan con claridad qué tipo crean. `session.New` usa el nombre corto porque el paquete ya deja claro qué construye.
+
+## Flujo de una request
 
 ```text
-cmd/web/main.go       Punto de entrada y composición de la aplicación
-cmd/web/routes.go      Router y orden de los middlewares
-cmd/web/middleware.go  Middlewares de recuperación, CSRF y sesiones
-pkg/config             Configuración compartida
-pkg/handlers           Handlers HTTP
-pkg/models             Estructuras de datos
-pkg/render             Renderizado de templates
-pkg/session            Creación y configuración del gestor de sesiones
-templates              Templates HTML
+Request HTTP
+    ↓
+chi router
+    ↓
+Recoverer
+    ↓
+NoSurf
+    ↓
+SessionLoad
+    ↓
+Handler.Home o Handler.About
+    ↓
+TemplateData
+    ↓
+Renderer.RenderTemplate
+    ↓
+HTML generado con html/template
 ```
+
+El orden está definido en `cmd/web/routes.go`:
+
+```go
+mux.Use(middleware.Recoverer)
+mux.Use(NoSurf(app))
+mux.Use(SessionLoad(app))
+```
+
+`Recoverer` evita que un panic cierre el proceso. `NoSurf` configura CSRF. `SessionLoad` carga la sesión antes del handler y guarda sus cambios al terminar.
+
+## Responsabilidad de cada paquete
+
+### `cmd/web`
+
+Es el borde de la aplicación. Aquí se conoce el servidor HTTP concreto, el router Chi, las rutas y el orden de los middlewares.
 
 ### `pkg/config`
 
-Define `AppConfig`, que contiene dependencias y opciones compartidas:
+Define `AppConfig`, el objeto que contiene dependencias y opciones compartidas:
 
 ```go
 type AppConfig struct {
@@ -66,48 +197,26 @@ type AppConfig struct {
 }
 ```
 
-`InProduction` activa opciones seguras de cookies, como `Secure`. `Session` contiene el gestor de sesiones que se crea en `main` y se inyecta en el flujo HTTP.
-
-### `pkg/render`
-
-Contiene `Renderer`, que sabe cómo cargar y ejecutar templates:
-
-```go
-type Renderer struct {
-    app *config.AppConfig
-}
-
-func NewRenderer(app *config.AppConfig) *Renderer {
-    return &Renderer{app: app}
-}
-```
-
-El renderer puede usar el cache configurado en `AppConfig` o crear los templates nuevamente, según el valor de `UseCache`.
-
 ### `pkg/handlers`
 
-Contiene los handlers HTTP y sus dependencias:
+Contiene los handlers HTTP. `Handler` conserva las dependencias que necesita cada request:
 
 ```go
 type Handler struct {
-    App      *config.AppConfig
     Renderer *render.Renderer
+    App      *config.AppConfig
 }
 ```
 
-Los handlers reciben un `Renderer` y lo utilizan para responder las requests:
+Un handler debería leer la request, ejecutar la lógica necesaria, construir los datos y delegar el HTML al renderer. Si la lógica de negocio crece, conviene extraerla a un servicio en vez de cargar más responsabilidades en el handler.
 
-```go
-func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
-    h.Renderer.RenderTemplate(w, "home.page.tmpl", &models.TemplateData{})
-}
-```
+### `pkg/render`
 
-Los handlers deberían concentrarse en la lógica de la request: leer parámetros, ejecutar la lógica necesaria, preparar los datos y devolver una respuesta.
+Contiene `Renderer`, `CreateTemplateCache` y la ejecución de templates. El handler no necesita saber si el template salió de un cache o del disco.
 
 ### `pkg/models`
 
-Contiene estructuras de datos compartidas. `TemplateData` representa el formato común de datos que reciben los templates:
+Contiene `TemplateData`, la estructura común que reciben los templates:
 
 ```go
 type TemplateData struct {
@@ -122,154 +231,59 @@ type TemplateData struct {
 }
 ```
 
-Tener una estructura común evita que cada handler pase un tipo completamente diferente al renderer. También permite agregar información transversal, como mensajes, errores o tokens CSRF.
+`Data map[string]any` permite datos específicos de una página, pero sacrifica seguridad de tipos. Cuando una página gane complejidad, puede ser preferible definir un modelo específico.
 
-`Data map[string]any` conserva flexibilidad para datos específicos de una página. Como contrapartida, esos datos tienen menos seguridad de tipos.
+### `pkg/session`
 
-## Inyección de dependencias
+Centraliza la configuración de `github.com/alexedwards/scs/v2`. No conoce handlers ni templates; solo crea el gestor de sesiones.
 
-La inyección de dependencias consiste en entregar un objeto desde afuera, en lugar de crearlo dentro del componente que lo usa.
+## Templates y renderizado
 
-Por ejemplo, `Renderer` necesita `AppConfig`. En vez de crear la configuración internamente, la recibe:
+Las páginas usan el sufijo `.page.tmpl` y el layout usa `.layout.tmpl`. `CreateTemplateCache` busca ambos grupos en `./templates`, combina cada página con los layouts y devuelve un `map[string]*template.Template`.
+
+El layout actual (`templates/base.layout.tmpl`) usa Bootstrap 5.3.8 desde CDN y expone los bloques `css`, `content` y `js`. Las páginas `home.page.tmpl` y `about.page.tmpl` definen el bloque `content`.
+
+Para agregar una página:
+
+1. Crear `templates/nombre.page.tmpl`.
+2. Incluir `{{ template "base" . }}`.
+3. Definir `{{ define "content" }}`.
+4. Agregar un método al handler.
+5. Registrar la ruta en `cmd/web/routes.go`.
+
+Ejemplo mínimo:
+
+```gotemplate
+{{ template "base" . }}
+
+{{ define "content" }}
+    <h1>Configuración</h1>
+{{ end }}
+```
+
+Los valores de `html/template` se escapan automáticamente. No conviertas strings de usuarios a `template.HTML` salvo que el contenido sea controlado y entiendas el riesgo.
+
+## Configuración y cache
+
+`InProduction` y `UseCache` representan decisiones distintas:
+
+- `InProduction` configura opciones propias de producción, como cookies `Secure`.
+- `UseCache` decide si el renderer usa `TemplateCache` o vuelve a crear los templates.
+
+No conviene reemplazar una variable por la otra. En desarrollo puede ser útil desactivar el cache para ver cambios sin reiniciar; en producción conviene crear el cache una vez y reutilizarlo.
+
+El estado actual usa:
 
 ```go
-renderer := render.NewRenderer(app)
+UseCache:     false,
+InProduction: false,
 ```
 
-Esto tiene varias ventajas:
-
-- las dependencias son explícitas;
-- `main` controla cómo se arma la aplicación;
-- los paquetes quedan menos acoplados;
-- es más sencillo reemplazar una dependencia durante un test;
-- se evita el estado global compartido.
-
-No todos los paquetes necesitan obligatoriamente un struct y un constructor. Se usan cuando un componente tiene estado o dependencias que debe conservar. Una función auxiliar simple puede existir sin constructor.
-
-## Por qué se evitan variables globales
-
-Una versión anterior utilizaba variables como:
-
-```go
-var Repo *Repository
-var app *config.AppConfig
-```
-
-Eso permitía que cualquier función accediera a dependencias sin recibirlas explícitamente. El problema es que las dependencias quedaban ocultas:
-
-```go
-func Home(w http.ResponseWriter, r *http.Request) {
-    // No se ve en la firma, pero depende de una variable global.
-}
-```
-
-Las variables globales dificultan los tests, pueden generar problemas cuando hay concurrencia y hacen más difícil entender el ciclo de vida de los objetos.
-
-La versión actual guarda las dependencias dentro de `Handler` y `Renderer`, que se crean desde `main`.
-
-## Repository Pattern
-
-El nombre `Repository` utilizado originalmente puede resultar confuso. Un repository, en sentido estricto, normalmente abstrae el acceso a datos:
-
-```go
-type UserRepository interface {
-    FindByID(id int) (*User, error)
-}
-```
-
-Una implementación podría consultar una base de datos:
-
-```go
-type PostgresUserRepository struct {
-    DB *sql.DB
-}
-```
-
-El objeto llamado `Repository` en la versión original no hacía eso. Simplemente contenía `AppConfig` para que los handlers pudieran acceder a la configuración. Por lo tanto, era más parecido a un contenedor de dependencias que a un Repository Pattern.
-
-Si en el futuro se agrega persistencia, podría existir un paquete separado:
-
-```text
-pkg/repository
-    user_repository.go
-```
-
-Ese repository tendría como responsabilidad consultar y guardar datos, no renderizar templates ni manejar requests HTTP.
-
-## Flujo de una request
-
-```text
-Request HTTP
-    ↓
-Recoverer
-    ↓
-NoSurf (protección CSRF)
-    ↓
-SessionLoad (carga y guardado de la sesión)
-    ↓
-Handler.Home o Handler.About
-    ↓
-Construcción de TemplateData
-    ↓
-Renderer.RenderTemplate
-    ↓
-Obtención del template desde el cache o desde los archivos
-    ↓
-Respuesta HTML
-```
-
-El handler decide qué datos necesita la página. El renderer decide cómo ejecutar el template. Esta separación permite cambiar la forma de cargar templates sin modificar cada handler.
-
-## CSRF y `CSRFToken`
-
-CSRF (Cross-Site Request Forgery) es un ataque en el que un sitio externo intenta provocar una request con las credenciales de un usuario que ya está logueado en esta aplicación. El token CSRF agrega un valor impredecible que el sitio externo no puede conocer y que debe acompañar a las requests que modifican datos.
-
-El middleware `NoSurf` se registra en `cmd/web/routes.go` y usa la librería `github.com/justinas/nosurf`. Su responsabilidad es:
-
-- generar y validar el token CSRF;
-- agregar la cookie base del mecanismo CSRF;
-- proteger las requests que cambian estado, especialmente las `POST`;
-- configurar la cookie con `HttpOnly`, `SameSite=Lax` y `Secure` cuando `InProduction` es `true`.
-
-`TemplateData` tiene el campo `CSRFToken` para que un handler pueda pasarlo al template:
-
-```go
-data := &models.TemplateData{
-    CSRFToken: nosurf.Token(r),
-}
-```
-
-Luego el formulario debe enviarlo como un campo oculto:
-
-```html
-<input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
-```
-
-Actualmente el middleware está conectado, pero los handlers existentes (`Home` y `About`) todavía no construyen un formulario ni cargan explícitamente `CSRFToken`. Por eso el campo del modelo está preparado para los próximos formularios, pero todavía no hay un flujo de escritura protegido por CSRF.
-
-Las requests `GET` se usan para consultar recursos y no deberían modificar datos. Las operaciones `POST`, `PUT`, `PATCH` y `DELETE` deben incluir el token CSRF cuando se incorporen.
-
-## Middlewares
-
-Los middlewares envuelven al router y permiten aplicar comportamiento común a varias rutas sin repetir código en cada handler.
-
-En `routes.go` se registran en este orden:
-
-1. `middleware.Recoverer`: recupera un `panic` y evita que la aplicación se cierre por un error inesperado de un handler.
-2. `NoSurf(app)`: agrega la protección CSRF y configura su cookie.
-3. `SessionLoad(app)`: carga los datos de sesión al comienzo de la request y guarda los cambios al terminarla.
-
-`SessionLoad` no crea la sesión. Usa el gestor que ya fue creado en `main`:
-
-```go
-app.Session = session.New(app.InProduction)
-```
-
-Esto mantiene la creación de dependencias en el punto de composición de la aplicación y permite que los handlers accedan a la sesión mediante el contexto de la request cuando sea necesario.
+Eso es cómodo para aprender, pero no es una configuración adecuada para producción. Antes de desplegar, la aplicación debería leer estas opciones desde variables de entorno o una configuración explícita y manejar errores de renderizado sin terminar el proceso desde una request.
 
 ## Sesiones
 
-El paquete `pkg/session` centraliza la configuración del gestor de sesiones de `github.com/alexedwards/scs/v2`.
+La aplicación usa `github.com/alexedwards/scs/v2`:
 
 ```go
 func New(inProduction bool) *scs.SessionManager {
@@ -284,118 +298,103 @@ func New(inProduction bool) *scs.SessionManager {
 
 Configuración actual:
 
-- la sesión dura como máximo 24 horas;
-- la cookie se conserva al cerrar el navegador;
-- `SameSite=Lax` reduce el envío de la cookie en requests cross-site;
-- `Secure=true` en producción hace que la cookie viaje únicamente por HTTPS;
-- SCS usa una cookie `HttpOnly` por defecto, por lo que JavaScript no puede leer directamente el identificador de sesión;
-- el store predeterminado es en memoria (`memstore`), adecuado para desarrollo local pero no para varias instancias o reinicios de producción.
+- duración máxima de 24 horas;
+- cookie persistente;
+- `SameSite=Lax`;
+- `Secure` activado cuando `InProduction` es `true`;
+- store en memoria, útil localmente pero no para varias instancias o reinicios de producción.
 
-En producción, el store debería reemplazarse por uno compartido, como Redis o una base de datos, para que todas las instancias de la aplicación puedan encontrar las mismas sesiones.
+El ejemplo actual guarda `r.RemoteAddr` en `/` y lo recupera en `/about`. `RemoteAddr` puede pertenecer a un proxy en producción; no se debe confiar ciegamente en `X-Forwarded-For` sin configurar una lista de proxies confiables.
 
-El acceso a los datos de sesión se hace desde el contexto de la request usando el `SessionManager`. Por ejemplo, un handler podría leer o guardar un valor con métodos como `GetString`, `Put` o `GetBool`, sin acceder directamente a la cookie.
+Para producción, reemplazar el store en memoria por uno compartido, como Redis o una base de datos.
 
-### Ejemplo actual: guardar y recuperar la IP
+## CSRF y formularios
 
-El ejemplo de los handlers usa la sesión para compartir un dato entre dos requests:
+`NoSurf(app)` protege las requests que modifican estado. Cuando se agregue un formulario, el handler debe incluir el token:
 
 ```go
-// Home: guarda el valor en la sesión.
-remoteIP := r.RemoteAddr
-h.App.Session.Put(r.Context(), "remote_ip", remoteIP)
-
-// About: recupera el valor guardado.
-remoteIP := h.App.Session.GetString(r.Context(), "remote_ip")
+data := &models.TemplateData{
+    CSRFToken: nosurf.Token(r),
+}
 ```
 
-El flujo para probarlo es:
+Y el template:
 
-1. visitar `/` para guardar `remote_ip` en la sesión;
-2. visitar `/about` para leer el valor y mostrarlo en la página;
-3. si no existe una sesión previa, `/about` muestra el mensaje de que todavía no conoce la IP.
+```gotemplate
+<form method="post" action="/perfil">
+    <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
+    <!-- campos -->
+</form>
+```
 
-`SessionLoad` se encarga de cargar la sesión antes de ejecutar el handler y de guardar los cambios al terminar la request. El navegador mantiene el identificador en la cookie y lo envía nuevamente al visitar `/about`, permitiendo recuperar el dato.
+Las rutas `GET` deben ser de lectura. Las operaciones `POST`, `PUT`, `PATCH` y `DELETE` deben validar autenticación, autorización, datos de entrada y CSRF cuando corresponda.
 
-`r.RemoteAddr` representa la dirección remota que ve el servidor y normalmente incluye el puerto, por ejemplo `127.0.0.1:54321`. En producción puede representar la dirección de un proxy o load balancer; para obtener la IP original habría que configurar y validar explícitamente headers como `X-Forwarded-For`.
+Actualmente no existen formularios de escritura: el middleware está conectado y el modelo tiene `CSRFToken`, pero todavía no hay un flujo que lo utilice.
 
+## Agregar una nueva ruta
 
-## Dependencias externas
+Para agregar una página o endpoint:
 
-Las dependencias de runtime están declaradas en `go.mod`:
+1. Definir el método en `pkg/handlers`.
+2. Preparar un `TemplateData` o una respuesta específica.
+3. Crear el template si la respuesta es HTML.
+4. Registrar el método en `cmd/web/routes.go`.
+5. Si modifica datos, usar el método HTTP adecuado y CSRF.
+6. Agregar un test para la respuesta y los casos de error.
+
+Ejemplo de ruta HTML:
+
+```go
+func (h *Handler) Contact(w http.ResponseWriter, r *http.Request) {
+    h.Renderer.RenderTemplate(w, "contact.page.tmpl", &models.TemplateData{})
+}
+```
+
+```go
+mux.Get("/contact", handler.Contact)
+```
+
+No agregues lógica de negocio, acceso a base de datos o dependencias globales directamente en `routes.go`.
+
+## Dependencias
+
+Las dependencias actuales de `go.mod` son:
 
 | Dependencia | Uso |
 | --- | --- |
-| `github.com/go-chi/chi/v5` | Router HTTP y composición de rutas/middlewares. |
-| `github.com/justinas/nosurf` | Generación y validación de tokens CSRF. |
-| `github.com/alexedwards/scs/v2` | Gestión, carga y persistencia de sesiones. |
+| `github.com/go-chi/chi/v5` | Router y middlewares HTTP. |
+| `github.com/justinas/nosurf` | Protección CSRF. |
+| `github.com/alexedwards/scs/v2` | Gestión y persistencia de sesiones. |
 
-La aplicación usa además paquetes de la biblioteca estándar de Go, como `net/http`, `html/template`, `log` y `time`.
+La aplicación usa también la biblioteca estándar, principalmente `net/http`, `html/template`, `log` y `time`.
 
-Para agregar o actualizar dependencias:
+Para agregar una dependencia:
 
 ```bash
 go get github.com/ejemplo/paquete
 go mod tidy
 ```
 
-`go.sum` guarda las sumas de comprobación de los módulos descargados. Debe versionarse junto con `go.mod` para que las instalaciones sean reproducibles.
+Versioná `go.mod` y `go.sum` juntos.
 
-Antes de aceptar cambios relacionados con dependencias conviene ejecutar:
+## Estado actual y próximos pasos
 
-```bash
-go test ./...
-go vet ./...
-go mod tidy -diff
-```
+El proyecto ya tiene:
 
-`go mod tidy -diff` permite detectar dependencias que sobran, faltan o están declaradas de forma incorrecta sin modificar los archivos.
+- composición de dependencias en `cmd/web/main.go`;
+- router Chi y middlewares;
+- renderizado con layouts y cache opcional;
+- sesiones con SCS;
+- middleware CSRF;
+- páginas Home y About.
 
-## Cache de templates
+Todavía falta, si el proyecto lo necesita:
 
-`CreateTemplateCache` busca:
+- agregar tests HTTP y de paquetes;
+- extraer servicios de negocio cuando la lógica crezca;
+- incorporar persistencia y repositories reales;
+- usar un store de sesiones compartido en producción;
+- manejar configuración desde el entorno;
+- decidir si se incorpora Vite, Tailwind, Alpine.js, HTMX y ECharts.
 
-- archivos `*.page.tmpl`;
-- archivos `*.layout.tmpl`.
-
-Después combina cada página con los layouts y devuelve un mapa:
-
-```go
-map[string]*template.Template
-```
-
-En producción conviene crear el cache una sola vez al iniciar la aplicación y usarlo desde `AppConfig`. En desarrollo puede ser útil volver a cargar los archivos en cada request para ver cambios sin reiniciar el servidor.
-
-## Principios que sigue esta arquitectura
-
-- `main` arma la aplicación.
-- Cada paquete tiene una responsabilidad concreta.
-- Las dependencias se pasan explícitamente.
-- Se evita compartir estado global.
-- Los handlers no necesitan saber cómo se cargan los templates.
-- El renderer no necesita conocer los detalles de cada endpoint.
-- Los modelos comunes se ubican en `pkg/models`.
-
-## Mejoras futuras posibles
-
-Al crecer la aplicación se podrían hacer estos ajustes:
-
-- eliminar `Handler.App` si los handlers no lo necesitan directamente;
-- usar `http.Error` en lugar de terminar el proceso con `log.Fatal` durante una request;
-- manejar los errores de `CreateTemplateCache` en vez de ignorarlos;
-- agregar interfaces para facilitar mocks en los tests;
-- agregar un repository real para el acceso a base de datos;
-- separar servicios de negocio de los handlers cuando la lógica crezca;
-- agregar formularios y handlers de escritura que usen `CSRFToken`;
-- reemplazar `memstore` por un store compartido en producción.
-
-## Ejecutar el proyecto
-
-```bash
-go run ./cmd/web
-```
-
-Verificar que todos los paquetes compilen:
-
-```bash
-go test ./...
-```
+La decisión de frontend está documentada, con ejemplos y trade-offs, en [HTMX.md](HTMX.md).
