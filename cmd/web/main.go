@@ -5,6 +5,7 @@ import (
 	"myapp/pkg/config"
 	"myapp/pkg/handlers"
 	"myapp/pkg/render"
+	"myapp/pkg/session"
 	"net/http"
 )
 
@@ -20,14 +21,21 @@ func main() {
 	app := &config.AppConfig{
 		UseCache:      false,
 		TemplateCache: tc,
+		InProduction:  false, // change to true for Production
 	}
 
-	renderer := render.NewRenderer(app)
-	handler := handlers.NewHandler(renderer)
+	app.Session = session.New(app.InProduction)
 
-	http.HandleFunc("/{$}", handler.Home)
-	http.HandleFunc("/about", handler.About)
+	renderer := render.NewRenderer(app)
+	handler := handlers.NewHandler(app, renderer)
 
 	log.Println("Starting application on port", portNumber)
-	_ = http.ListenAndServe(portNumber, nil)
+
+	srv := &http.Server{
+		Addr:    portNumber,
+		Handler: routes(handler, app),
+	}
+
+	err = srv.ListenAndServe()
+	log.Fatal(err)
 }

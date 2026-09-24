@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 
+	"myapp/pkg/config"
 	"myapp/pkg/models"
 	"myapp/pkg/render"
 )
@@ -10,11 +11,15 @@ import (
 // Handler contains the dependencies used by the HTTP handlers.
 type Handler struct {
 	Renderer *render.Renderer
+	App      *config.AppConfig
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(r *render.Renderer) *Handler {
-	return &Handler{Renderer: r}
+func NewHandler(app *config.AppConfig, r *render.Renderer) *Handler {
+	return &Handler{
+		Renderer: r,
+		App:      app,
+	}
 }
 
 // Home is the home page handler
