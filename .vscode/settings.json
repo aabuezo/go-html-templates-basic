@@ -1,0 +1,12 @@
+{
+  "emmet.includeLanguages": {
+    "gohtml": "html",
+    "gotmpl": "html",
+    "tmpl": "html"
+  },
+  "emmet.triggerExpansionOnTab": true,
+  "files.associations": {
+    "*.tmpl": "html",
+    "*.page.tmpl": "html"
+  }
+}
