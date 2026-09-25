@@ -5,8 +5,8 @@ import (
 	"errors"
 	"html/template"
 	"log"
-	"myapp/pkg/config"
-	"myapp/pkg/models"
+	"myapp/internal/config"
+	"myapp/internal/models"
 	"net/http"
 	"path/filepath"
 )

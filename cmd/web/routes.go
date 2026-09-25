@@ -1,8 +1,8 @@
 package main
 
 import (
-	"myapp/pkg/config"
-	"myapp/pkg/handlers"
+	"myapp/internal/config"
+	"myapp/internal/handlers"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"

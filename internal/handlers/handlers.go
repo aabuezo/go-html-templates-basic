@@ -3,9 +3,9 @@ package handlers
 import (
 	"net/http"
 
-	"myapp/pkg/config"
-	"myapp/pkg/models"
-	"myapp/pkg/render"
+	"myapp/internal/config"
+	"myapp/internal/models"
+	"myapp/internal/render"
 )
 
 // Handler contains the dependencies used by the HTTP handlers.

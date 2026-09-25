@@ -2,10 +2,10 @@ package main
 
 import (
 	"log"
-	"myapp/pkg/config"
-	"myapp/pkg/handlers"
-	"myapp/pkg/render"
-	"myapp/pkg/session"
+	"myapp/internal/config"
+	"myapp/internal/handlers"
+	"myapp/internal/render"
+	"myapp/internal/session"
 	"net/http"
 )
 

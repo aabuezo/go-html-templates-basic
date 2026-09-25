@@ -1,7 +1,7 @@
 package main
 
 import (
-	"myapp/pkg/config"
+	"myapp/internal/config"
 	"net/http"
 
 	"github.com/justinas/nosurf"
