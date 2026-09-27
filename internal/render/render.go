@@ -5,10 +5,12 @@ import (
 	"errors"
 	"html/template"
 	"log"
-	"myapp/pkg/config"
-	"myapp/pkg/models"
+	"myapp/internal/config"
+	"myapp/internal/models"
 	"net/http"
 	"path/filepath"
+
+	"github.com/justinas/nosurf"
 )
 
 type Renderer struct {
@@ -20,13 +22,16 @@ func NewRenderer(app *config.AppConfig) *Renderer {
 	return &Renderer{app: app}
 }
 
-func AddDefaultData(td *models.TemplateData) *models.TemplateData {
-
+func (r *Renderer) AddDefaultData(td *models.TemplateData, req *http.Request) *models.TemplateData {
+	td.Success = r.app.Session.PopString(req.Context(), "success")
+	td.Warning = r.app.Session.PopString(req.Context(), "warning")
+	td.Error = r.app.Session.PopString(req.Context(), "error")
+	td.CSRFToken = nosurf.Token(req)
 	return td
 }
 
 // RenderTemplate renders a template
-func (r *Renderer) RenderTemplate(w http.ResponseWriter, tmpl string, td *models.TemplateData) {
+func (r *Renderer) RenderTemplate(w http.ResponseWriter, req *http.Request, tmpl string, td *models.TemplateData) {
 	var tc map[string]*template.Template
 	if r.app.UseCache {
 		// get the template cache from the app config
@@ -43,7 +48,7 @@ func (r *Renderer) RenderTemplate(w http.ResponseWriter, tmpl string, td *models
 
 	buf := new(bytes.Buffer)
 
-	td = AddDefaultData(td)
+	td = r.AddDefaultData(td, req)
 
 	err := t.Execute(buf, td)
 	if err != nil {

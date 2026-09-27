@@ -1,17 +1,22 @@
 package main
 
 import (
+	"encoding/gob"
 	"log"
-	"myapp/pkg/config"
-	"myapp/pkg/handlers"
-	"myapp/pkg/render"
-	"myapp/pkg/session"
+	"myapp/internal/config"
+	"myapp/internal/handlers"
+	"myapp/internal/models"
+	"myapp/internal/render"
+	"myapp/internal/session"
 	"net/http"
 )
 
 const portNumber = ":8080"
 
 func main() {
+
+	// what am I going to put in the session
+	gob.Register(models.Login{})
 
 	tc, err := render.CreateTemplateCache()
 	if err != nil {
