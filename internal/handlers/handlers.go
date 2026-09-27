@@ -7,6 +7,7 @@ import (
 
 	"myapp/internal/config"
 	"myapp/internal/forms"
+	"myapp/internal/helpers"
 	"myapp/internal/models"
 	"myapp/internal/render"
 )
@@ -27,25 +28,12 @@ func NewHandler(app *config.AppConfig, r *render.Renderer) *Handler {
 
 // Home is the home page handler
 func (h *Handler) Home(w http.ResponseWriter, r *http.Request) {
-	remoteIP := r.RemoteAddr
-	h.App.Session.Put(r.Context(), "remote_ip", remoteIP)
-
 	h.Renderer.RenderTemplate(w, r, "home.page.tmpl", &models.TemplateData{})
 }
 
 // About is the about page handler
 func (h *Handler) About(w http.ResponseWriter, r *http.Request) {
-	// perform some logic
-	stringMap := make(map[string]string)
-	stringMap["test"] = "Hello, again."
-
-	remoteIP := h.App.Session.GetString(r.Context(), "remote_ip")
-	stringMap["remote_ip"] = remoteIP
-
-	// send the data to the template
-	h.Renderer.RenderTemplate(w, r, "about.page.tmpl", &models.TemplateData{
-		StringMap: stringMap,
-	})
+	h.Renderer.RenderTemplate(w, r, "about.page.tmpl", &models.TemplateData{})
 }
 
 // Form shows the login page
@@ -64,8 +52,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) LoginForm(w http.ResponseWriter, r *http.Request) {
 	// Parse the form
 	err := r.ParseForm()
+
 	if err != nil {
-		log.Println(err)
+		helpers.ServerError(w, err)
 		return
 	}
 
